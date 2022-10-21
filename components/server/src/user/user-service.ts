@@ -33,6 +33,11 @@ import { StripeService } from "../../ee/src/user/stripe-service";
 import { ResponseError } from "vscode-ws-jsonrpc";
 import { ErrorCodes } from "@gitpod/gitpod-protocol/lib/messaging/error";
 import { UsageService } from "./usage-service";
+import {
+    CostCenter_BillingStrategy,
+    UsageServiceClient,
+    UsageServiceDefinition,
+} from "@gitpod/usage-api/lib/usage/v1/usage.pb";
 
 export interface FindUserByIdentityStrResult {
     user: User;
@@ -79,6 +84,8 @@ export class UserService {
     @inject(TeamDB) protected readonly teamDB: TeamDB;
     @inject(StripeService) protected readonly stripeService: StripeService;
     @inject(UsageService) protected readonly usageService: UsageService;
+    @inject(UsageServiceDefinition.name)
+    protected readonly usageServiceClient: UsageServiceClient;
 
     /**
      * Takes strings in the form of <authHost>/<authName> and returns the matching User
@@ -209,6 +216,27 @@ export class UserService {
                     "You're no longer a member of the selected billing team.",
                 );
             }
+            if (await this.isUnbilledTeam(attribution)) {
+                throw new ResponseError(
+                    ErrorCodes.INVALID_COST_CENTER,
+                    "The billing team you've selected does not have billing enabled.",
+                );
+            }
+        }
+        if (attribution.kind === "user") {
+            if (user.id !== attribution.userId) {
+                throw new ResponseError(
+                    ErrorCodes.INVALID_COST_CENTER,
+                    "You can select either yourself or a team you are a member of",
+                );
+            }
+        }
+        const billedAttributionIds = await this.listAvailableUsageAttributionIds(user);
+        if (billedAttributionIds.find((id) => AttributionId.equals(id, attribution)) === undefined) {
+            throw new ResponseError(
+                ErrorCodes.INVALID_COST_CENTER,
+                "You can select either yourself or a billed team you are a member of",
+            );
         }
         return attribution;
     }
@@ -236,7 +264,11 @@ export class UserService {
             } else {
                 attributionId = AttributionId.create(user);
             }
-            if (!!attributionId && (await this.hasCredits(attributionId))) {
+            if (
+                !!attributionId &&
+                (await this.hasCredits(attributionId)) &&
+                !(await this.isUnbilledTeam(attributionId))
+            ) {
                 return attributionId;
             }
         }
@@ -291,10 +323,45 @@ export class UserService {
         return response.usedCredits < response.usageLimit;
     }
 
+    protected async isUnbilledTeam(attributionId: AttributionId): Promise<boolean> {
+        if (attributionId.kind !== "team") {
+            return false;
+        }
+        const { costCenter } = await this.usageServiceClient.getCostCenter({
+            attributionId: AttributionId.render(attributionId),
+        });
+        return costCenter?.billingStrategy !== CostCenter_BillingStrategy.BILLING_STRATEGY_STRIPE;
+    }
+
     async setUsageAttribution(user: User, usageAttributionId: string): Promise<void> {
         await this.validateUsageAttributionId(user, usageAttributionId);
         user.usageAttributionId = usageAttributionId;
         await this.userDb.storeUser(user);
+    }
+
+    /**
+     * Lists all valid AttributionIds a user can attributed (billed) usage to.
+     * @param user
+     * @returns
+     */
+    async listAvailableUsageAttributionIds(user: User): Promise<AttributionId[]> {
+        // List all teams available for attribution
+        const teams = await this.teamDB.findTeamsByUser(user.id);
+        const billedStripeTeams = (
+            await Promise.all(
+                teams.map(async (team) => {
+                    const attributionId = AttributionId.create(team);
+                    const billingStrategy = await this.usageService.getCurrentBillingStategy(attributionId);
+                    if (billingStrategy === CostCenter_BillingStrategy.BILLING_STRATEGY_STRIPE) {
+                        return attributionId;
+                    }
+                    return undefined;
+                }),
+            )
+        ).filter((t) => !!t) as AttributionId[];
+
+        // Attributing to oneself is always an option
+        return [AttributionId.create(user)].concat(billedStripeTeams);
     }
 
     /**

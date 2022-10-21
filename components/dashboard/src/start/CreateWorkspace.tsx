@@ -29,6 +29,7 @@ import { BillingAccountSelector } from "../components/BillingAccountSelector";
 import { AttributionId } from "@gitpod/gitpod-protocol/lib/attribution";
 import { TeamsContext } from "../teams/teams-context";
 import Alert from "../components/Alert";
+import { FeatureFlagContext } from "../contexts/FeatureFlagContext";
 
 export interface CreateWorkspaceProps {
     contextUrl: string;
@@ -269,6 +270,9 @@ export default class CreateWorkspace extends React.Component<CreateWorkspaceProp
             return (
                 <RunningPrebuildView
                     runningPrebuild={result.runningWorkspacePrebuild}
+                    onUseLastSuccessfulPrebuild={() =>
+                        this.createWorkspace(CreateWorkspaceMode.UseLastSuccessfulPrebuild)
+                    }
                     onIgnorePrebuild={() => this.createWorkspace(CreateWorkspaceMode.ForceNew)}
                     onPrebuildSucceeded={() => this.createWorkspace(CreateWorkspaceMode.UsePrebuild)}
                 />
@@ -531,12 +535,14 @@ interface RunningPrebuildViewProps {
         starting: RunningWorkspacePrebuildStarting;
         sameCluster: boolean;
     };
+    onUseLastSuccessfulPrebuild: () => void;
     onIgnorePrebuild: () => void;
     onPrebuildSucceeded: () => void;
 }
 
 function RunningPrebuildView(props: RunningPrebuildViewProps) {
     const workspaceId = props.runningPrebuild.workspaceID;
+    const { showUseLastSuccessfulPrebuild } = useContext(FeatureFlagContext);
 
     useEffect(() => {
         const disposables = new DisposableCollection();
@@ -565,6 +571,14 @@ function RunningPrebuildView(props: RunningPrebuildViewProps) {
             {/* TODO(gpl) Copied around in Start-/CreateWorkspace. This should properly go somewhere central. */}
             <div className="h-full mt-6 w-11/12 lg:w-3/5">
                 <PrebuildLogs workspaceId={workspaceId} onIgnorePrebuild={props.onIgnorePrebuild}>
+                    {showUseLastSuccessfulPrebuild && (
+                        <button
+                            className="secondary"
+                            onClick={() => props.onUseLastSuccessfulPrebuild && props.onUseLastSuccessfulPrebuild()}
+                        >
+                            Use Last Successful Prebuild
+                        </button>
+                    )}
                     <button className="secondary" onClick={() => props.onIgnorePrebuild && props.onIgnorePrebuild()}>
                         Skip Prebuild
                     </button>
